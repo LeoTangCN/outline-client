@@ -22,4 +22,5 @@
 + (void)startTun2Socks: (int)socksServerPort;
 + (void)stop;
 + (void)setIsUdpForwardingEnabled:(BOOL)enabled;
++ (uint64_t)getCurrentPacketLengthPassed;
 @end

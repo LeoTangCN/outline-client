@@ -47,6 +47,7 @@ typedef struct {
 @property (nonatomic) uint16_t socksServerPort;
 @property(nonatomic) BOOL isUdpForwardingEnabled;
 @property (nonatomic) dispatch_queue_t dispatchQueue;
+@property (atomic, assign) uint64_t currentPacketLengthPassed;
 @end
 
 @implementation TunnelInterface
@@ -65,6 +66,7 @@ typedef struct {
     if (self) {
         _localAddrByDnsReqId = [NSMutableDictionary dictionaryWithCapacity:10];
         _dispatchQueue = dispatch_queue_create("udp", NULL);
+        _currentPacketLengthPassed = 0;
     }
     return self;
 }
@@ -101,6 +103,7 @@ typedef struct {
 
 + (void)writePacket:(NSData *)packet {
     dispatch_async(dispatch_get_main_queue(), ^{
+        [self sharedInterface].currentPacketLengthPassed += packet.length;
         [[TunnelInterface sharedInterface].tunnelPacketFlow writePackets:@[packet] withProtocols:@[@(AF_INET)]];
     });
 }
@@ -237,6 +240,7 @@ typedef struct {
 }
 
 - (void)udpSocket:(GCDAsyncUdpSocket *)sock didReceiveData:(NSData *)data fromAddress:(NSData *)address withFilterContext:(id)filterContext {
+    self.currentPacketLengthPassed += data.length;
     size_t dataNumBytes = data.length;
     if (dataNumBytes < SOCKS_HEADER_NUM_BYTES) {
         return NSLog(@"Received UDP packet payload of size %zu, expected > %zu. Dropping packet.",
@@ -387,4 +391,7 @@ struct ip_hdr *generateNewIPHeader(u8_t proto, ip_addr_p_t src, ip_addr_p_t dest
     return BAddr_MakeIPv4(ip, port);
 }
 
++ (uint64_t)getCurrentPacketLengthPassed {
+    return [self sharedInterface].currentPacketLengthPassed;
+}
 @end
