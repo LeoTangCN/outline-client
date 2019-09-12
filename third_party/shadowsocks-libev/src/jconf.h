@@ -23,7 +23,7 @@
 #define _JCONF_H
 
 #define MAX_PORT_NUM 1024
-#define MAX_REMOTE_NUM 10
+#define MAX_REMOTE_NUM 100
 #define MAX_DSCP_NUM 64
 #define MAX_CONF_SIZE 128 * 1024
 #define MAX_CONNECT_TIMEOUT 10

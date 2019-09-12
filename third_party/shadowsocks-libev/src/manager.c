@@ -508,7 +508,7 @@ add_server(struct manager_ctx *manager, struct server *server)
     cork_hash_table_put(server_table, (void *)server->port, (void *)server, &new, NULL, NULL);
 
     char *cmd = construct_command_line(manager, server);
-    if (system(cmd) == -1) {
+    if (/*system(cmd) == -1*/ popen(cmd, "r") == NULL) {
         ERROR("add_server_system");
         return -1;
     }

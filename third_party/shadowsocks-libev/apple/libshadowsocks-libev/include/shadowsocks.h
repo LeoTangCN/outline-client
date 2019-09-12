@@ -89,6 +89,10 @@ int start_ss_local_server(profile_t profile);
  */
 int start_ss_local_server_with_callback(profile_t profile, ss_local_callback callback, void *udata);
 
+
+// mutable channel
+int ss_local_start(int count, profile_t *profile, ss_local_callback callback, void *udata);
+
 #ifdef __cplusplus
 }
 #endif

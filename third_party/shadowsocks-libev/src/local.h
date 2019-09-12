@@ -49,6 +49,9 @@ typedef struct listen_ctx {
     int fd;
     int mptcp;
     struct sockaddr **remote_addr;
+    
+    //add for UFO
+    crypto_t *crypto;
 } listen_ctx_t;
 
 typedef struct server_ctx {

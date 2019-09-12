@@ -39,7 +39,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #endif
-#ifdef LIB_ONLY
+#if 1 //def LIB_ONLY //change for UFO
 #include "shadowsocks.h"
 #endif
 
@@ -80,7 +80,7 @@
 #endif
 
 int verbose    = 0;
-int reuse_port = 0;
+int reuse_port     = 1; //change for UFO
 
 #ifdef __ANDROID__
 int vpn        = 0;
@@ -145,7 +145,7 @@ static void free_server(server_t *server);
 static void close_and_free_server(EV_P_ server_t *server);
 
 static remote_t *new_remote(int fd, int timeout);
-static server_t *new_server(int fd);
+static server_t *new_server(int fd, listen_ctx_t *listener);
 
 static struct cork_dllist connections;
 
@@ -333,6 +333,9 @@ server_handshake(EV_P_ ev_io *w, buffer_t *buf)
     server_ctx_t *server_recv_ctx = (server_ctx_t *)w;
     server_t *server              = server_recv_ctx->server;
     remote_t *remote              = server->remote;
+
+    //add for UFO
+    crypto_t *crypto = server->listener->crypto;
 
     struct socks5_request *request = (struct socks5_request *)buf->data;
     size_t request_len             = sizeof(struct socks5_request);
@@ -631,6 +634,9 @@ server_stream(EV_P_ ev_io *w, buffer_t *buf)
     server_t *server              = server_recv_ctx->server;
     remote_t *remote              = server->remote;
 
+    //add for UFO
+    crypto_t *crypto = server->listener->crypto;
+    
     if (remote == NULL) {
         LOGE("invalid remote");
         close_and_free_server(EV_A_ server);
@@ -1008,6 +1014,10 @@ remote_recv_cb(EV_P_ ev_io *w, int revents)
     remote_ctx_t *remote_recv_ctx = (remote_ctx_t *)w;
     remote_t *remote              = remote_recv_ctx->remote;
     server_t *server              = remote->server;
+    
+    //add for UFO
+    crypto_t *crypto = server->listener->crypto;
+
 
     ssize_t r = recv(remote->fd, server->buf->data, SOCKET_BUF_SIZE, 0);
 
@@ -1227,8 +1237,11 @@ close_and_free_remote(EV_P_ remote_t *remote)
 }
 
 static server_t *
-new_server(int fd)
+new_server(int fd, listen_ctx_t *listener)
 {
+    //add for UFO
+    crypto_t *crypto = listener->crypto;
+    
     server_t *server;
     server = ss_malloc(sizeof(server_t));
 
@@ -1268,6 +1281,9 @@ new_server(int fd)
 static void
 free_server(server_t *server)
 {
+    //add for UFO
+    crypto_t *crypto = server->listener->crypto;
+    
     cork_dllist_remove(&server->entries);
 
     if (server->remote != NULL) {
@@ -1442,11 +1458,107 @@ accept_cb(EV_P_ ev_io *w, int revents)
     setsockopt(serverfd, SOL_SOCKET, SO_NOSIGPIPE, &opt, sizeof(opt));
 #endif
 
-    server_t *server = new_server(serverfd);
+    server_t *server = new_server(serverfd, listener);
     server->listener = listener;
 
     ev_io_start(EV_A_ & server->recv_ctx->io);
 }
+
+#if 1 //add for UFO
+static int listen_num                                = 0;
+static listen_ctx_t *listen_ctx_list[MAX_REMOTE_NUM] = { NULL };
+static struct sockaddr *listen_addr_list[MAX_REMOTE_NUM] = { NULL };
+static struct sockaddr_storage listen_addr_data[MAX_REMOTE_NUM];
+
+int ss_local_create(profile_t *profile, ss_local_callback callback, void *udata)
+{
+    char *method      = profile->method;
+    char *password    = profile->password;
+    char *remote_host = profile->remote_host;
+    char *local_addr  = profile->local_addr;
+    int remote_port   = profile->remote_port;
+    int local_port    = profile->local_port;
+    int timeout       = profile->timeout;
+    int mtu           = profile->mtu;
+    int mptcp         = profile->mptcp;
+    
+    char local_port_str[16];
+    char remote_port_str[16];
+    sprintf(local_port_str, "%d", local_port);
+    sprintf(remote_port_str, "%d", remote_port);
+    
+    if (local_addr == NULL) {
+        local_addr = "127.0.0.1";
+    }
+    
+    struct sockaddr_storage *storage = &listen_addr_data[listen_num];
+    memset(storage, 0, sizeof(struct sockaddr_storage));
+    if (get_sockaddr(remote_host, remote_port_str, storage, 0, ipv6first) == -1) {
+        return -1;
+    }
+    
+    // Setup keys
+    LOGI("initializing ciphers... %s", method);
+    crypto_t *crypto = crypto_init(password, NULL, method);
+    if (crypto == NULL) {
+        ERROR("failed to init ciphers");
+        return -1;
+    }
+    
+    // Setup proxy context
+    struct ev_loop *loop = EV_DEFAULT;
+    
+    listen_ctx_t *listen_ctx = ss_malloc(sizeof(listen_ctx_t));
+    listen_ctx->remote_num     = 1;
+    listen_ctx->remote_addr    = &listen_addr_list[listen_num];
+    listen_ctx->remote_addr[0] = (struct sockaddr *)(storage);
+    listen_ctx->timeout        = timeout;
+    listen_ctx->iface          = NULL;
+    listen_ctx->mptcp          = mptcp;
+    listen_ctx->fd             = -1;
+    listen_ctx->crypto         = crypto;
+    listen_ctx_list[listen_num++] = listen_ctx;
+    
+    if (strcmp(local_addr, ":") > 0)
+        LOGI("listening at [%s]:%s", local_addr, local_port_str);
+    else
+        LOGI("listening at %s:%s", local_addr, local_port_str);
+    
+    if (mode != UDP_ONLY) {
+        // Setup socket
+        int listenfd;
+        listenfd = create_and_bind(local_addr, local_port_str);
+        if (listenfd == -1) {
+            ERROR("bind()");
+            //return -1;
+        }
+        if (listen(listenfd, SOMAXCONN) == -1) {
+            ERROR("listen()");
+            //return -1;
+        }
+        setnonblocking(listenfd);
+        
+        listen_ctx->fd = listenfd;
+        
+        ev_io_init(&listen_ctx->io, accept_cb, listenfd, EV_READ);
+        ev_io_start(loop, &listen_ctx->io);
+    }
+    
+    // Setup UDP
+    if (mode != TCP_ONLY) {
+        LOGI("udprelay enabled");
+        struct sockaddr *addr = (struct sockaddr *)(storage);
+        udp_fd = init_udprelay(local_addr, local_port_str, addr,
+                               get_sockaddr_len(addr), mtu, crypto, timeout, NULL);
+    }
+    
+    if (callback) {
+        callback(listen_ctx->fd, udp_fd, udata);
+    }
+    
+    return 0;
+}
+#endif //add for UFO
 
 #ifndef LIB_ONLY
 int
@@ -1628,8 +1740,11 @@ main(int argc, char **argv)
             conf_path = get_default_conf();
         }
     }
+        
+   //change for UFO
+    jconf_t *conf = NULL;
     if (conf_path != NULL) {
-        jconf_t *conf = read_jconf(conf_path);
+         conf = read_jconf(conf_path);
         if (remote_num == 0) {
             remote_num = conf->remote_num;
             for (i = 0; i < remote_num; i++)
@@ -1891,6 +2006,9 @@ main(int argc, char **argv)
     listen_ctx.timeout = atoi(timeout);
     listen_ctx.iface   = iface;
     listen_ctx.mptcp   = mptcp;
+        
+    //add for UFO
+    listen_ctx.crypto = crypto;
 
     // Setup signal handler
     ev_signal_init(&sigint_watcher, signal_cb, SIGINT);
@@ -1945,6 +2063,37 @@ main(int argc, char **argv)
         udp_fd = init_udprelay(local_addr, local_port, addr,
                                get_sockaddr_len(addr), mtu, crypto, listen_ctx.timeout, iface);
     }
+        
+#if 1 //add for UFO
+        if(conf!=NULL && conf->port_password_num>0) {
+            profile_t profile;
+            profile.local_addr = local_addr;     // local ip to bind
+            profile.timeout = atoi(timeout);          // connection timeout
+            profile.acl = NULL;            // file path to acl
+            profile.log = NULL;            // file path to log
+            profile.fast_open = fast_open;        // enable tcp fast open
+            profile.mode = mode;             // enable udp relay
+            profile.mtu = mtu;              // MTU of interface
+            profile.mptcp = mptcp;            // enable multipath TCP
+            profile.verbose = verbose;          // verbose mode
+            
+            for(int i=0; i<conf->port_password_num; i++) {
+                char text[2][256], *p, *s;
+                strcpy(text[0], conf->port_password[i].port);
+                s=text[0], p=strchr(s, '/'), *p='\0';
+                profile.local_port = atoi(s);       // port number of local server
+                s=p+1, p=strchr(s, '/'), *p='\0';
+                profile.remote_host = s;    // hostname or ip of remote server
+                profile.remote_port = atoi(p+1);      // port number of remote server
+                strcpy(text[1], conf->port_password[i].password);
+                s=text[1], p=strchr(s, '/'), *p='\0';
+                profile.method = s;         // encryption method
+                profile.password = p + 1;       // password of remote server
+                ss_local_create(&profile, NULL, NULL);
+            }
+        }
+#endif //add for UFO
+
 
 #ifdef HAVE_LAUNCHD
     if (local_port == NULL)
@@ -1979,6 +2128,22 @@ main(int argc, char **argv)
     }
 
     if (mode != UDP_ONLY) {
+#if 1 //add for UFO
+        while (listen_num > 0) {
+            listen_ctx_t *listen_ctx = listen_ctx_list[--listen_num];
+            ev_io_stop(loop, &listen_ctx->io);
+            close(listen_ctx->fd);
+            ss_free(listen_ctx->crypto->cipher);
+            ss_free(listen_ctx->crypto);
+            ss_free(listen_ctx);
+            listen_ctx_list[listen_num] = NULL;
+        }
+        ss_free(crypto->cipher);
+        ss_free(crypto);
+        crypto = NULL;
+#endif //add for UFO
+
+        
         ev_io_stop(loop, &listen_ctx.io);
         free_connections(loop);
 
@@ -2161,5 +2326,94 @@ start_ss_local_server_with_callback(profile_t profile, ss_local_callback callbac
 {
     return _start_ss_local_server(profile, callback, udata);
 }
+    
+#if 1 //add for UFO
+    int ss_local_start(int count, profile_t *profile, ss_local_callback callback, void *udata)
+    {
+        srand(time(NULL));
+        
+        char *log         = profile->log;
+        
+        mode      = profile->mode;
+        fast_open = profile->fast_open;
+        verbose   = profile->verbose;
+        
+#ifdef __MINGW32__
+        winsock_init();
+#endif
+        
+        USE_LOGFILE(log);
+        
+        if (profile->acl != NULL) {
+            acl = !init_acl(profile->acl);
+        }
+        
+#ifndef __MINGW32__
+        // ignore SIGPIPE
+        signal(SIGPIPE, SIG_IGN);
+        signal(SIGABRT, SIG_IGN);
+#endif
+        
+        ev_signal_init(&sigint_watcher, signal_cb, SIGINT);
+        ev_signal_init(&sigterm_watcher, signal_cb, SIGTERM);
+        ev_signal_start(EV_DEFAULT, &sigint_watcher);
+        ev_signal_start(EV_DEFAULT, &sigterm_watcher);
+#ifndef __MINGW32__
+        ev_signal_init(&sigusr1_watcher, signal_cb, SIGUSR1);
+        ev_signal_start(EV_DEFAULT, &sigusr1_watcher);
+#endif
+        
+        // Init connections
+        cork_dllist_init(&connections);
+        
+        for(int i=0; i<count; i++) {
+            ss_local_create(&profile[i], callback, udata);
+        }
+        
+        // Enter the loop
+        struct ev_loop *loop = EV_DEFAULT;
+        ev_run(loop, 0);
+        
+        if (verbose) {
+            LOGI("closed gracefully");
+        }
+        
+        // Clean up
+        if (mode != UDP_ONLY) {
+            while (listen_num > 0) {
+                listen_ctx_t *listen_ctx = listen_ctx_list[--listen_num];
+                ev_io_stop(loop, &listen_ctx->io);
+                close(listen_ctx->fd);
+                ss_free(listen_ctx->crypto->cipher);
+                ss_free(listen_ctx->crypto);
+                ss_free(listen_ctx);
+                listen_ctx_list[listen_num] = NULL;
+            }
+            free_connections(loop);
+        }
+        
+        if (mode != TCP_ONLY) {
+            free_udprelay();
+        }
+        
+        ev_signal_stop(EV_DEFAULT, &sigint_watcher);
+        ev_signal_stop(EV_DEFAULT, &sigterm_watcher);
+#ifndef __MINGW32__
+        ev_signal_stop(EV_DEFAULT, &sigusr1_watcher);
+#endif
+        
+        ev_default_destroy();
+        
+        CLOSE_LOGFILE;
+        
+#ifdef __MINGW32__
+        winsock_cleanup();
+#endif
+        
+        return ret_val;
+    }
+#endif //add for UFO
+    
+
 
 #endif

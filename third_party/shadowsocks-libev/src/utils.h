@@ -36,12 +36,21 @@
 #include <android/log.h>
 #define USE_TTY()
 #define USE_SYSLOG(ident, _cond)
-#define LOGI(...)                                                \
-    ((void)__android_log_print(ANDROID_LOG_DEBUG, "shadowsocks", \
-                               __VA_ARGS__))
-#define LOGE(...)                                                \
-    ((void)__android_log_print(ANDROID_LOG_ERROR, "shadowsocks", \
-                               __VA_ARGS__))
+
+//#define LOGI(...)                                                \
+//    ((void)__android_log_print(ANDROID_LOG_DEBUG, "shadowsocks", \
+//                               __VA_ARGS__))
+//#define LOGE(...)                                                \
+//    ((void)__android_log_print(ANDROID_LOG_ERROR, "shadowsocks", \
+//                               __VA_ARGS__))
+
+#define LOGI(format, ...)               \
+do {                                    \
+} while(0)                              \
+
+#define LOGE(format, ...)               \
+do {                                    \
+} while(0)                              \
 
 #else // not __ANDROID__
 
